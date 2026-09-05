@@ -1,0 +1,71 @@
+name: Build LÖVE 11.5 lovegame APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-android-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this project
+        uses: actions/checkout@v4
+
+      - name: Prepare official LÖVE Android 11.5a wrapper
+        run: |
+          rm -rf android
+          git clone --depth 1 --branch 11.5a --recurse-submodules --shallow-submodules \
+            https://github.com/love2d/love-android.git android
+
+          # Keep the Android wrapper from love-android, but use the exact LÖVE 11.5
+          # source supplied in this repository.
+          find android/love -mindepth 1 -maxdepth 1 \
+            ! -name build.gradle ! -name proguard-rules.pro \
+            ! -name src -exec rm -rf {} +
+          rm -rf android/love/src/common android/love/src/modules android/love/src/libraries \
+                 android/love/src/love.cpp android/love/src/love.h
+          cp -a src android/love/
+          cp -a changes.txt license.txt README.md 2>/dev/null android/love/ || true
+
+      - name: Apply lovegame launcher modification
+        run: python3 scripts/patch-lovegame-launcher.py
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;25.2.9519653"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew clean assembleNormalRecordRelease --no-daemon --stacktrace
+
+      - name: Locate APK
+        working-directory: android
+        run: |
+          find app/build/outputs/apk -type f -name '*.apk' -print
+          test -n "$(find app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: love-11.5-lovegame-release
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 30
