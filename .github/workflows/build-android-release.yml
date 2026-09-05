@@ -16,8 +16,17 @@ jobs:
 
     steps:
 
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # ==========================================================
+      # JAVA
+      # ==========================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -25,8 +34,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+
+      # ==========================================================
+      # ANDROID SDK
+      # ==========================================================
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+
+      # ==========================================================
+      # ANDROID DEPENDENCIES
+      # ==========================================================
 
       - name: Install Android dependencies
         run: |
@@ -37,7 +56,12 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "cmake;3.22.1" \
-            "ndk;26.1.10909125"
+            "ndk;25.2.9519653"
+
+
+      # ==========================================================
+      # LÖVE ANDROID 11.5a
+      # ==========================================================
 
       - name: Clone LÖVE Android 11.5a
         run: |
@@ -53,11 +77,27 @@ jobs:
             https://github.com/love2d/love-android.git \
             android
 
-      - name: Update submodules
+
+      # ==========================================================
+      # SUBMODULES
+      # ==========================================================
+
+      - name: Update LÖVE submodules
         working-directory: android
         run: |
+          set -e
+
           git submodule sync --recursive
-          git submodule update --init --force --recursive
+
+          git submodule update \
+            --init \
+            --force \
+            --recursive
+
+
+      # ==========================================================
+      # INSTALL CUSTOM LÖVE SOURCE
+      # ==========================================================
 
       - name: Install custom LÖVE source
         run: |
@@ -65,6 +105,9 @@ jobs:
 
           if [ ! -d "src" ]; then
             echo "ERRO: a pasta src não existe na raiz do repositório."
+            echo ""
+            echo "Estrutura encontrada:"
+            ls -la
             exit 1
           fi
 
@@ -91,6 +134,13 @@ jobs:
             cp README.md android/love/
           fi
 
+          echo "Código LÖVE instalado."
+
+
+      # ==========================================================
+      # LOVEGAME LAUNCHER PATCH
+      # ==========================================================
+
       - name: Patch LoveGame launcher
         run: |
           set -e
@@ -101,6 +151,11 @@ jobs:
           fi
 
           python3 scripts/patch-lovegame-launcher.py
+
+
+      # ==========================================================
+      # VERIFY GAMEACTIVITY
+      # ==========================================================
 
       - name: Verify GameActivity
         run: |
@@ -116,11 +171,16 @@ jobs:
           echo "GameActivity encontrado."
 
           if ! grep -q "lovegame" "$FILE"; then
-            echo "ERRO: o código lovegame não foi aplicado."
+            echo "ERRO: o código do LoveGame não foi aplicado."
             exit 1
           fi
 
-          echo "Patch lovegame confirmado."
+          echo "Patch LoveGame confirmado."
+
+
+      # ==========================================================
+      # ANDROID STORAGE PERMISSION
+      # ==========================================================
 
       - name: Configure storage permission
         run: |
@@ -133,35 +193,60 @@ jobs:
             exit 1
           fi
 
-          if ! grep -q "MANAGE_EXTERNAL_STORAGE" "$MANIFEST"; then
-            sed -i '/<application/i\
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />\
-' "$MANIFEST"
+          if grep -q "android.permission.MANAGE_EXTERNAL_STORAGE" "$MANIFEST"; then
+            echo "Permissão MANAGE_EXTERNAL_STORAGE já existe."
+          else
+            sed -i '/<application/ i\    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />' "$MANIFEST"
+            echo "Permissão MANAGE_EXTERNAL_STORAGE adicionada."
           fi
 
-          echo "Permissão de armazenamento configurada."
+          echo ""
+          echo "Permissões relacionadas:"
+          grep "uses-permission" "$MANIFEST" || true
+
+
+      # ==========================================================
+      # GRADLE
+      # ==========================================================
 
       - name: Make Gradle executable
         working-directory: android
         run: |
           chmod +x gradlew
 
+
+      # ==========================================================
+      # CLEAN
+      # ==========================================================
+
       - name: Clean Gradle
         working-directory: android
         run: |
           ./gradlew clean --no-daemon
 
-      - name: Build Release APK
+
+      # ==========================================================
+      # BUILD RELEASE
+      # ==========================================================
+
+      - name: Build LÖVE 11.5 Release
         working-directory: android
         run: |
           ./gradlew assembleNormalRecordRelease \
             --no-daemon \
             --stacktrace
 
+
+      # ==========================================================
+      # FIND UNSIGNED APK
+      # ==========================================================
+
       - name: Find unsigned APK
         id: find_apk
         run: |
           set -e
+
+          echo "Procurando APK..."
 
           APK=$(find android/app/build/outputs/apk \
             -type f \
@@ -169,18 +254,24 @@ jobs:
             | head -n 1)
 
           if [ -z "$APK" ]; then
+            echo ""
             echo "ERRO: APK unsigned não encontrado."
-
-            echo "Arquivos disponíveis:"
+            echo ""
+            echo "Arquivos encontrados:"
             find android/app/build/outputs/apk -type f || true
-
             exit 1
           fi
 
+          echo ""
           echo "APK encontrado:"
           echo "$APK"
 
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
+
+
+      # ==========================================================
+      # CREATE SIGNING KEY
+      # ==========================================================
 
       - name: Create signing keystore
         env:
@@ -203,6 +294,13 @@ jobs:
             -validity 10000 \
             -dname "CN=LoveGame Android, OU=LoveGame, O=LoveGame, L=Brazil, ST=SP, C=BR"
 
+          echo "Keystore criado."
+
+
+      # ==========================================================
+      # ZIPALIGN
+      # ==========================================================
+
       - name: Align APK
         env:
           UNSIGNED_APK: ${{ steps.find_apk.outputs.apk }}
@@ -222,6 +320,13 @@ jobs:
             4 \
             "$UNSIGNED_APK" \
             lovegame-aligned.apk
+
+          echo "APK alinhado."
+
+
+      # ==========================================================
+      # SIGN APK
+      # ==========================================================
 
       - name: Sign APK
         env:
@@ -247,6 +352,13 @@ jobs:
             --out lovegame-android-release.apk \
             lovegame-aligned.apk
 
+          echo "APK assinado."
+
+
+      # ==========================================================
+      # VERIFY SIGNATURE
+      # ==========================================================
+
       - name: Verify APK signature
         run: |
           set -e
@@ -258,11 +370,31 @@ jobs:
             lovegame-android-release.apk
 
           echo ""
-          echo "=========================================="
-          echo " APK ASSINADO COM SUCESSO"
-          echo "=========================================="
+          echo "=============================================="
+          echo " APK ASSINADO E VALIDADO COM SUCESSO"
+          echo "=============================================="
+          echo ""
 
           ls -lh lovegame-android-release.apk
+
+
+      # ==========================================================
+      # APK INFORMATION
+      # ==========================================================
+
+      - name: Show APK information
+        run: |
+          echo "Arquivo final:"
+          realpath lovegame-android-release.apk
+
+          echo ""
+          echo "Tamanho:"
+          du -h lovegame-android-release.apk
+
+
+      # ==========================================================
+      # UPLOAD FINAL APK
+      # ==========================================================
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
