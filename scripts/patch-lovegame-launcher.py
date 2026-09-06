@@ -266,6 +266,7 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
 
     private void requestAllFilesAccess() {
         if (android.os.Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()) return;
+        waitingForAllFilesAccess = true;
         runOnUiThread(new Runnable() {
             @Override public void run() {
                 try {
@@ -289,6 +290,20 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
 ON_RESUME = r'''    @Override
     public void onResume() {
         super.onResume();
+
+        // Android 11+ grants all-files access from Settings. If native LÖVE
+        // started before the permission was granted, retry exactly once when
+        // returning from Settings. The guard prevents repeated restarts on
+        // ordinary resume events and avoids the previous ANR behavior.
+        if (android.os.Build.VERSION.SDK_INT >= 30
+                && waitingForAllFilesAccess
+                && Environment.isExternalStorageManager()
+                && gamePath.length() == 0) {
+            waitingForAllFilesAccess = false;
+            Log.d("GameActivity", "All-files access granted; restarting LÖVE once to load lovegame.");
+            resetNative();
+            startNative();
+        }
     }
 '''
 
