@@ -356,7 +356,7 @@ def main():
     source = add_import(source, "import java.util.Set;", "import java.util.LinkedHashSet;")
     source = add_import(source, "import android.provider.Settings;", "import android.os.Environment;")
 
-    fields = '''    private static final int LOVEGAME_MAX_DEPTH = 6;\n    private static final int LOVEGAME_MAX_RESULTS = 32;\n'''
+    fields = '''    private static final int LOVEGAME_MAX_DEPTH = 6;\n    private static final int LOVEGAME_MAX_RESULTS = 32;\n    private boolean waitingForAllFilesAccess = false;\n'''
     marker = "    private boolean shortEdgesMode = false;"
     if "LOVEGAME_MAX_DEPTH" not in source:
         if marker not in source:
