@@ -353,21 +353,24 @@ ON_RESUME = r'''    @Override
     public void onResume() {
         super.onResume();
 
-        // First-run after granting all-files access: the native engine may
-        // already have been created while the permission dialog was open.
-        // Do not restart native LÖVE directly from here. Instead, locate the
-        // project, request its orientation on the UI thread, then recreate
-        // the Activity once. The recreated Activity starts LÖVE with the
-        // correct orientation from the beginning.
+        // Android 11+ grants all-files access from Settings. The first launch
+        // must finish locating the game and applying its orientation BEFORE
+        // native LÖVE is restarted. Starting native immediately after
+        // setRequestedOrientation() races Android's configuration change and
+        // can leave a landscape game rendered inside a portrait surface.
         if (android.os.Build.VERSION.SDK_INT >= 30
                 && waitingForAllFilesAccess
                 && Environment.isExternalStorageManager()
                 && gamePath.length() == 0) {
             waitingForAllFilesAccess = false;
-            Log.d("GameActivity", "All-files access granted; locating LoveGame before Activity recreation.");
 
             new Thread(new Runnable() {
                 @Override public void run() {
+                    Log.d("GameActivity", "All-files access granted; locating LoveGame before native restart.");
+
+                    // This performs the recursive scan off the UI thread.
+                    // checkLovegameFolder() also selects the remembered/single
+                    // folder and schedules the orientation change on the UI thread.
                     checkLovegameFolder();
 
                     if (gamePath.length() == 0) {
@@ -377,17 +380,20 @@ ON_RESUME = r'''    @Override
 
                     runOnUiThread(new Runnable() {
                         @Override public void run() {
-                            GameActivity.this.getWindow().getDecorView().postDelayed(new Runnable() {
+                            // Give Android a chance to commit the requested
+                            // orientation before SDL creates its native window.
+                            getWindow().getDecorView().postDelayed(new Runnable() {
                                 @Override public void run() {
-                                    if (gamePath.length() == 0 || isFinishing()) return;
-                                    Log.d("GameActivity", "Project orientation selected; recreating Activity for clean LÖVE startup.");
-                                    recreate();
+                                    if (gamePath.length() == 0) return;
+                                    Log.d("GameActivity", "Starting native LÖVE after orientation setup.");
+                                    resetNative();
+                                    startNative();
                                 }
-                            }, 1000);
+                            }, 500);
                         }
                     });
                 }
-            }, "LoveGamePermissionReload").start();
+            }, "LoveGamePermissionLoad").start();
         }
     }
 '''
