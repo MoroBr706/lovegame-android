@@ -284,33 +284,11 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
         });
     }
 
-    private void restartNativeSafely() {
-        runOnUiThread(new Runnable() {
-            @Override public void run() {
-                if (gamePath.length() == 0) return;
-                try {
-                    resetNative();
-                    startNative();
-                } catch (Exception e) {
-                    Log.e("GameActivity", "Could not restart LÖVE after selecting lovegame", e);
-                }
-            }
-        });
-    }
 '''
 
 ON_RESUME = r'''    @Override
     public void onResume() {
         super.onResume();
-
-        if (!embed && android.os.Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager() && gamePath.length() == 0) {
-            new Thread(new Runnable() {
-                @Override public void run() {
-                    checkLovegameFolder();
-                    if (gamePath.length() > 0) restartNativeSafely();
-                }
-            }, "LoveGameDiscovery").start();
-        }
     }
 '''
 

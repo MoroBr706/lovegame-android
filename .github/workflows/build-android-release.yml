@@ -1,4 +1,4 @@
-name: Build LÖVE 11.5 LoveGame APK
+name: Build LÖVE 11.5 LoveGame APK - Responsive Fix
 
 on:
   workflow_dispatch:
@@ -70,7 +70,8 @@ jobs:
           grep -q "Environment.isExternalStorageManager" "$FILE"
           grep -q "findLovegameFolders" "$FILE"
           grep -q "MANAGE_EXTERNAL_STORAGE" android/love/src/main/AndroidManifest.xml
-          echo "Launcher patch verified."
+          ! grep -q "restartNativeSafely" "$FILE"
+          echo "Launcher patch verified: no native restart from onResume."
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
