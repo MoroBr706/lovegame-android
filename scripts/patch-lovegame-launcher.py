@@ -110,7 +110,21 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
         }
 
         if (android.os.Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            requestAllFilesAccess();
+            // Native LÖVE asks for the game path during startup. Keep that
+            // startup thread waiting instead of allowing LÖVE to continue
+            // with an empty path and show the "no game" screen.
+            synchronized (loveGameReadyLock) {
+                waitingForLoveGame = true;
+                requestAllFilesAccess();
+                while (waitingForLoveGame && gamePath.length() == 0) {
+                    try {
+                        loveGameReadyLock.wait();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
             return;
         }
 
@@ -353,11 +367,10 @@ ON_RESUME = r'''    @Override
     public void onResume() {
         super.onResume();
 
-        // Android 11+ grants all-files access from Settings. The first launch
-        // must finish locating the game and applying its orientation BEFORE
-        // native LÖVE is restarted. Starting native immediately after
-        // setRequestedOrientation() races Android's configuration change and
-        // can leave a landscape game rendered inside a portrait surface.
+        // The first native startup can be waiting in getGamePath() while the
+        // user grants MANAGE_EXTERNAL_STORAGE. Finish locating the game,
+        // apply its orientation, then release the native startup thread.
+        // Never recreate/reset/start the native engine here.
         if (android.os.Build.VERSION.SDK_INT >= 30
                 && waitingForAllFilesAccess
                 && Environment.isExternalStorageManager()
@@ -366,27 +379,29 @@ ON_RESUME = r'''    @Override
 
             new Thread(new Runnable() {
                 @Override public void run() {
-                    Log.d("GameActivity", "All-files access granted; locating LoveGame before native restart.");
-
-                    // This performs the recursive scan off the UI thread.
-                    // checkLovegameFolder() also selects the remembered/single
-                    // folder and schedules the orientation change on the UI thread.
+                    Log.d("GameActivity", "All-files access granted; locating LoveGame for initial native startup.");
                     checkLovegameFolder();
 
                     if (gamePath.length() == 0) {
                         Log.w("GameActivity", "LoveGame was not selected after storage permission.");
+                        synchronized (loveGameReadyLock) {
+                            waitingForLoveGame = false;
+                            loveGameReadyLock.notifyAll();
+                        }
                         return;
                     }
 
+                    // Allow Android to commit the requested orientation before
+                    // the native startup thread is released.
                     runOnUiThread(new Runnable() {
                         @Override public void run() {
-                            // Give Android a chance to commit the requested
-                            // orientation before SDL creates its native window.
                             getWindow().getDecorView().postDelayed(new Runnable() {
                                 @Override public void run() {
-                                    if (gamePath.length() == 0) return;
-                                    Log.d("GameActivity", "Recreating Activity after orientation setup so LÖVE starts with the correct surface.");
-                                    recreate();
+                                    synchronized (loveGameReadyLock) {
+                                        waitingForLoveGame = false;
+                                        loveGameReadyLock.notifyAll();
+                                    }
+                                    Log.d("GameActivity", "LoveGame ready; native LÖVE startup may continue.");
                                 }
                             }, 500);
                         }
@@ -449,7 +464,9 @@ def main():
     source = add_import(source, "import java.io.BufferedReader;", "import java.io.File;")
     source = add_import(source, "import java.io.FileReader;", "import java.io.BufferedReader;")
 
-    fields = '''    private static final int LOVEGAME_MAX_DEPTH = 6;\n    private static final int LOVEGAME_MAX_RESULTS = 32;\n    private boolean waitingForAllFilesAccess = false;\n'''
+    fields = '''    private static final int LOVEGAME_MAX_DEPTH = 6;\n    private static final int LOVEGAME_MAX_RESULTS = 32;\n    private boolean waitingForAllFilesAccess = false;
+    private boolean waitingForLoveGame = false;
+    private final Object loveGameReadyLock = new Object();\n'''
     marker = "    private boolean shortEdgesMode = false;"
     if "LOVEGAME_MAX_DEPTH" not in source:
         if marker not in source:

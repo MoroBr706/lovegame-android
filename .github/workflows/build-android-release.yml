@@ -73,8 +73,11 @@ jobs:
           grep -q "SCREEN_ORIENTATION_LANDSCAPE" "$FILE"
           grep -q "SCREEN_ORIENTATION_PORTRAIT" "$FILE"
           grep -q "MANAGE_EXTERNAL_STORAGE" android/love/src/main/AndroidManifest.xml
-          ! grep -q "restartNativeSafely" "$FILE"
-          echo "Launcher patch verified: no native restart from onResume."
+          ! grep -q "recreate()" "$FILE"
+          ! grep -q "resetNative()" "$FILE"
+          ! grep -q "startNative()" "$FILE"
+          grep -q "loveGameReadyLock" "$FILE"
+          echo "Launcher patch verified: permission startup waits for game path without native restart."
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
