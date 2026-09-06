@@ -69,6 +69,9 @@ jobs:
           grep -q "ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION" "$FILE"
           grep -q "Environment.isExternalStorageManager" "$FILE"
           grep -q "findLovegameFolders" "$FILE"
+          grep -q "applyLoveGameOrientation" "$FILE"
+          grep -q "SCREEN_ORIENTATION_LANDSCAPE" "$FILE"
+          grep -q "SCREEN_ORIENTATION_PORTRAIT" "$FILE"
           grep -q "MANAGE_EXTERNAL_STORAGE" android/love/src/main/AndroidManifest.xml
           ! grep -q "restartNativeSafely" "$FILE"
           echo "Launcher patch verified: no native restart from onResume."

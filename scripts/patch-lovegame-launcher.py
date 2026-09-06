@@ -102,6 +102,7 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
         if (ext != null) {
             File appGame = new File(ext, "lovegame/main.lua");
             if (appGame.isFile() && appGame.canRead()) {
+                applyLoveGameOrientation(appGame.getParentFile().getAbsolutePath());
                 gamePath = appGame.getParentFile().getAbsolutePath() + File.separator;
                 storagePermissionUnnecessary = true;
                 return;
@@ -129,6 +130,7 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
         if (!last.isEmpty()) {
             File lastMain = new File(last, "main.lua");
             if (lastMain.isFile() && lastMain.canRead()) {
+                applyLoveGameOrientation(lastMain.getParentFile().getAbsolutePath());
                 gamePath = lastMain.getParentFile().getAbsolutePath() + File.separator;
                 storagePermissionUnnecessary = false;
                 return;
@@ -191,11 +193,71 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
         return results;
     }
 
+    private void applyLoveGameOrientation(final String folder) {
+        // LÖVE determines Android orientation from the game's configured
+        // window aspect ratio (conf.lua width/height). Apply the same choice
+        // before native LÖVE continues so a landscape project does not start
+        // inside a portrait Activity and get cropped until the user rotates.
+        int width = 800;
+        int height = 600;
+        File conf = new File(folder, "conf.lua");
+
+        if (conf.isFile() && conf.canRead()) {
+            StringBuilder text = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new FileReader(conf))) {
+                String line;
+                int chars = 0;
+                while ((line = reader.readLine()) != null && chars < 262144) {
+                    text.append(line).append('\n');
+                    chars += line.length() + 1;
+                }
+            } catch (Exception e) {
+                Log.w("GameActivity", "Unable to read conf.lua for orientation", e);
+            }
+
+            java.util.regex.Matcher wm = java.util.regex.Pattern
+                    .compile("t\\s*\\.\\s*window\\s*\\.\\s*width\\s*=\\s*(\\d+)")
+                    .matcher(text.toString());
+            java.util.regex.Matcher hm = java.util.regex.Pattern
+                    .compile("t\\s*\\.\\s*window\\s*\\.\\s*height\\s*=\\s*(\\d+)")
+                    .matcher(text.toString());
+            if (wm.find()) {
+                try { width = Integer.parseInt(wm.group(1)); } catch (NumberFormatException ignored) {}
+            }
+            if (hm.find()) {
+                try { height = Integer.parseInt(hm.group(1)); } catch (NumberFormatException ignored) {}
+            }
+        }
+
+        final int requested;
+        if (width > height) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+        } else if (height > width) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+        } else {
+            requested = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR;
+        }
+
+        Log.d("GameActivity", "LoveGame orientation from conf.lua: "
+                + width + "x" + height + " -> " + requested);
+
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    setRequestedOrientation(requested);
+                } catch (Exception e) {
+                    Log.w("GameActivity", "Unable to apply LoveGame orientation", e);
+                }
+            }
+        });
+    }
+
     private void selectLovegameFolder(String folder) {
         File dir = new File(folder);
         File main = new File(dir, "main.lua");
         if (!dir.isDirectory() || !main.isFile() || !main.canRead()) return;
 
+        applyLoveGameOrientation(dir.getAbsolutePath());
         gamePath = dir.getAbsolutePath() + File.separator;
         storagePermissionUnnecessary = false;
         getSharedPreferences("lovegame_launcher", Context.MODE_PRIVATE)
@@ -291,18 +353,41 @@ ON_RESUME = r'''    @Override
     public void onResume() {
         super.onResume();
 
-        // Android 11+ grants all-files access from Settings. If native LÖVE
-        // started before the permission was granted, retry exactly once when
-        // returning from Settings. The guard prevents repeated restarts on
-        // ordinary resume events and avoids the previous ANR behavior.
+        // Returning from the Android storage settings is a special first-run
+        // case. Do the filesystem scan off the UI thread, apply the project's
+        // orientation on the UI thread, and only then restart native LÖVE.
+        // The short delayed restart gives Android time to apply the requested
+        // landscape/portrait orientation before the game surface is recreated.
         if (android.os.Build.VERSION.SDK_INT >= 30
                 && waitingForAllFilesAccess
                 && Environment.isExternalStorageManager()
                 && gamePath.length() == 0) {
             waitingForAllFilesAccess = false;
-            Log.d("GameActivity", "All-files access granted; restarting LÖVE once to load lovegame.");
-            resetNative();
-            startNative();
+            Log.d("GameActivity", "All-files access granted; locating LoveGame before native restart.");
+
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    checkLovegameFolder();
+
+                    if (gamePath.length() == 0) {
+                        Log.w("GameActivity", "LoveGame was not selected after storage permission.");
+                        return;
+                    }
+
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            GameActivity.this.getWindow().getDecorView().postDelayed(new Runnable() {
+                                @Override public void run() {
+                                    if (gamePath.length() == 0) return;
+                                    Log.d("GameActivity", "Project orientation applied; starting native LÖVE.");
+                                    resetNative();
+                                    startNative();
+                                }
+                            }, 700);
+                        }
+                    });
+                }
+            }, "LoveGamePermissionReload").start();
         }
     }
 '''
@@ -355,6 +440,9 @@ def main():
     source = add_import(source, "import java.util.LinkedHashSet;", "import java.util.Collections;")
     source = add_import(source, "import java.util.Set;", "import java.util.LinkedHashSet;")
     source = add_import(source, "import android.provider.Settings;", "import android.os.Environment;")
+    source = add_import(source, "import android.content.pm.ActivityInfo;", "import android.content.pm.PackageManager;")
+    source = add_import(source, "import java.io.BufferedReader;", "import java.io.File;")
+    source = add_import(source, "import java.io.FileReader;", "import java.io.BufferedReader;")
 
     fields = '''    private static final int LOVEGAME_MAX_DEPTH = 6;\n    private static final int LOVEGAME_MAX_RESULTS = 32;\n    private boolean waitingForAllFilesAccess = false;\n'''
     marker = "    private boolean shortEdgesMode = false;"
