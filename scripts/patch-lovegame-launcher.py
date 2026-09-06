@@ -353,17 +353,18 @@ ON_RESUME = r'''    @Override
     public void onResume() {
         super.onResume();
 
-        // Returning from the Android storage settings is a special first-run
-        // case. Do the filesystem scan off the UI thread, apply the project's
-        // orientation on the UI thread, and only then restart native LÖVE.
-        // The short delayed restart gives Android time to apply the requested
-        // landscape/portrait orientation before the game surface is recreated.
+        // First-run after granting all-files access: the native engine may
+        // already have been created while the permission dialog was open.
+        // Do not restart native LÖVE directly from here. Instead, locate the
+        // project, request its orientation on the UI thread, then recreate
+        // the Activity once. The recreated Activity starts LÖVE with the
+        // correct orientation from the beginning.
         if (android.os.Build.VERSION.SDK_INT >= 30
                 && waitingForAllFilesAccess
                 && Environment.isExternalStorageManager()
                 && gamePath.length() == 0) {
             waitingForAllFilesAccess = false;
-            Log.d("GameActivity", "All-files access granted; locating LoveGame before native restart.");
+            Log.d("GameActivity", "All-files access granted; locating LoveGame before Activity recreation.");
 
             new Thread(new Runnable() {
                 @Override public void run() {
@@ -378,12 +379,11 @@ ON_RESUME = r'''    @Override
                         @Override public void run() {
                             GameActivity.this.getWindow().getDecorView().postDelayed(new Runnable() {
                                 @Override public void run() {
-                                    if (gamePath.length() == 0) return;
-                                    Log.d("GameActivity", "Project orientation applied; starting native LÖVE.");
-                                    resetNative();
-                                    startNative();
+                                    if (gamePath.length() == 0 || isFinishing()) return;
+                                    Log.d("GameActivity", "Project orientation selected; recreating Activity for clean LÖVE startup.");
+                                    recreate();
                                 }
-                            }, 700);
+                            }, 1000);
                         }
                     });
                 }
