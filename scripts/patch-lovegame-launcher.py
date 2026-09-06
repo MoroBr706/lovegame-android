@@ -208,10 +208,11 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
     }
 
     private void applyLoveGameOrientation(final String folder) {
-        // LÖVE determines Android orientation from the game's configured
-        // window aspect ratio (conf.lua width/height). Apply the same choice
-        // before native LÖVE continues so a landscape project does not start
-        // inside a portrait Activity and get cropped until the user rotates.
+        // Determine the orientation before native LÖVE is allowed to continue.
+        // The old implementation only posted setRequestedOrientation() and
+        // waited a fixed 500 ms. On some devices Android needs longer to commit
+        // the configuration change, so the native window could still be created
+        // in portrait and only become landscape after the next app launch.
         int width = 800;
         int height = 600;
         File conf = new File(folder, "conf.lua");
@@ -229,32 +230,73 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
                 Log.w("GameActivity", "Unable to read conf.lua for orientation", e);
             }
 
-            java.util.regex.Matcher wm = java.util.regex.Pattern
-                    .compile("t\\s*\\.\\s*window\\s*\\.\\s*width\\s*=\\s*(\\d+)")
-                    .matcher(text.toString());
-            java.util.regex.Matcher hm = java.util.regex.Pattern
-                    .compile("t\\s*\\.\\s*window\\s*\\.\\s*height\\s*=\\s*(\\d+)")
-                    .matcher(text.toString());
-            if (wm.find()) {
-                try { width = Integer.parseInt(wm.group(1)); } catch (NumberFormatException ignored) {}
+            String config = text.toString();
+            java.util.regex.Matcher pair = java.util.regex.Pattern
+                    .compile("t\\s*\\.\\s*window\\s*\\.\\s*width\\s*,\\s*t\\s*\\.\\s*window\\s*\\.\\s*height\\s*=\\s*(\\d+)\\s*,\\s*(\\d+)")
+                    .matcher(config);
+            if (pair.find()) {
+                try {
+                    width = Integer.parseInt(pair.group(1));
+                    height = Integer.parseInt(pair.group(2));
+                } catch (NumberFormatException ignored) {}
+            } else {
+                java.util.regex.Matcher wm = java.util.regex.Pattern
+                        .compile("t\\s*\\.\\s*window\\s*\\.\\s*width\\s*=\\s*(\\d+)")
+                        .matcher(config);
+                java.util.regex.Matcher hm = java.util.regex.Pattern
+                        .compile("t\\s*\\.\\s*window\\s*\\.\\s*height\\s*=\\s*(\\d+)")
+                        .matcher(config);
+                if (wm.find()) {
+                    try { width = Integer.parseInt(wm.group(1)); } catch (NumberFormatException ignored) {}
+                }
+                if (hm.find()) {
+                    try { height = Integer.parseInt(hm.group(1)); } catch (NumberFormatException ignored) {}
+                }
             }
-            if (hm.find()) {
-                try { height = Integer.parseInt(hm.group(1)); } catch (NumberFormatException ignored) {}
+
+            // Also support the common table form:
+            // t.window = { width = 1280, height = 720, ... }
+            java.util.regex.Matcher table = java.util.regex.Pattern
+                    .compile("t\\s*\\.\\s*window\\s*=\\s*\\{[^}]*?width\\s*=\\s*(\\d+)[^}]*?height\\s*=\\s*(\\d+)", java.util.regex.Pattern.DOTALL)
+                    .matcher(config);
+            if (table.find()) {
+                try {
+                    width = Integer.parseInt(table.group(1));
+                    height = Integer.parseInt(table.group(2));
+                } catch (NumberFormatException ignored) {}
             }
         }
 
         final int requested;
+        final int expectedConfiguration;
         if (width > height) {
             requested = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+            expectedConfiguration = android.content.res.Configuration.ORIENTATION_LANDSCAPE;
         } else if (height > width) {
             requested = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+            expectedConfiguration = android.content.res.Configuration.ORIENTATION_PORTRAIT;
         } else {
             requested = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR;
+            expectedConfiguration = android.content.res.Configuration.ORIENTATION_UNDEFINED;
         }
 
         Log.d("GameActivity", "LoveGame orientation from conf.lua: "
                 + width + "x" + height + " -> " + requested);
 
+        if (expectedConfiguration == android.content.res.Configuration.ORIENTATION_UNDEFINED) {
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        setRequestedOrientation(requested);
+                    } catch (Exception e) {
+                        Log.w("GameActivity", "Unable to apply LoveGame orientation", e);
+                    }
+                }
+            });
+            return;
+        }
+
+        final Object orientationLock = new Object();
         runOnUiThread(new Runnable() {
             @Override public void run() {
                 try {
@@ -264,6 +306,27 @@ CHECK_METHOD = r'''    protected void checkLovegameFolder() {
                 }
             }
         });
+
+        // Do not guess with a fixed delay. Wait until Android actually reports
+        // the requested orientation, but never block startup forever.
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (System.currentTimeMillis() < deadline) {
+            int current = getResources().getConfiguration().orientation;
+            if (current == expectedConfiguration) {
+                Log.d("GameActivity", "LoveGame orientation is ready: " + current);
+                return;
+            }
+            synchronized (orientationLock) {
+                try {
+                    orientationLock.wait(50L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+
+        Log.w("GameActivity", "Timed out waiting for Android orientation change; continuing with requested orientation.");
     }
 
     private void selectLovegameFolder(String folder) {
@@ -391,21 +454,14 @@ ON_RESUME = r'''    @Override
                         return;
                     }
 
-                    // Allow Android to commit the requested orientation before
-                    // the native startup thread is released.
-                    runOnUiThread(new Runnable() {
-                        @Override public void run() {
-                            getWindow().getDecorView().postDelayed(new Runnable() {
-                                @Override public void run() {
-                                    synchronized (loveGameReadyLock) {
-                                        waitingForLoveGame = false;
-                                        loveGameReadyLock.notifyAll();
-                                    }
-                                    Log.d("GameActivity", "LoveGame ready; native LÖVE startup may continue.");
-                                }
-                            }, 500);
-                        }
-                    });
+                    // checkLovegameFolder() already waited for Android to
+                    // commit the requested orientation. Release native startup
+                    // only after that barrier has completed.
+                    synchronized (loveGameReadyLock) {
+                        waitingForLoveGame = false;
+                        loveGameReadyLock.notifyAll();
+                    }
+                    Log.d("GameActivity", "LoveGame ready with project orientation; native LÖVE startup may continue.");
                 }
             }, "LoveGamePermissionLoad").start();
         }
