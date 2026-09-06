@@ -385,9 +385,8 @@ ON_RESUME = r'''    @Override
                             getWindow().getDecorView().postDelayed(new Runnable() {
                                 @Override public void run() {
                                     if (gamePath.length() == 0) return;
-                                    Log.d("GameActivity", "Starting native LÖVE after orientation setup.");
-                                    resetNative();
-                                    startNative();
+                                    Log.d("GameActivity", "Recreating Activity after orientation setup so LÖVE starts with the correct surface.");
+                                    recreate();
                                 }
                             }, 500);
                         }
