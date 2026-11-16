@@ -97,7 +97,7 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "cmake;3.22.1" \
-            "ndk;26.1.10909125"
+            "ndk;25.2.9519653"
 
       - name: Build unsigned Release APK
         working-directory: android
